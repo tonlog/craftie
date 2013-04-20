@@ -3,8 +3,24 @@ import threading, thread
 import time
 import Queue
 
+catg = {
+        "MapWorker" : lambda collector, dmt = "[\W\s]": MapWorker(collector, domap, dmt = dmt),
+        "ReduceWorker" : lambda collector: ReduceWorker(collector, doreduce),
+        }
+
+
+def domap(args):
+    words = args
+    records = dict()
+    for element in words:
+        element = element.lower()
+        if ( element in records ):
+            records[element] += 1
+        else:
+            records[element] = 1
+    return records
+
 def get_instance_of(type):
-    catg = {"MapWorker": lambda collector, dmt = "[\W\s]": MapWorker(collector, dmt = dmt)}
     return catg[type]
 
 def partition(fname, delmt = "\n"):
@@ -28,7 +44,7 @@ class WorkingGroup:
             worker = get_instance_of(self.worker_role)(self.collector)
             self.threads.append(WorkSlot(self.queue, worker))
                                                                
-    def fill_single(self, args):
+    def fill_singletask(self, args):
         self.queue.put(args)
 
     def fill_tasklist(self, tlist):
@@ -66,7 +82,7 @@ class Collector(list):
 
     def report(self, timeout = 0):
         while (True):
-            time.sleep(8)
+            time.sleep(4)
             self.cp = self[:]
             del self[:]
             self.cp.sort()
@@ -75,12 +91,24 @@ class Collector(list):
     def separate(self, dt):
         keys = dt.keys()
         keys.sort()
+        l = len(keys)
+        for i in range(len(keys)/5 + 1):
+            pack = []
+            for j in range(5):
+                index = i*5 + j
+                if(index - l < 0):
+                    k = keys[index]
+                    v = dt[k]
+                    if k and v:
+                        pack.append({k:v})
+            if len(pack) > 0: self.send(pack)
 
+    def send(self, pack):
+        print "received pack: ", pack
+                
             
     def group(self):
-        print "sepa!"
         tmp = self.queue.get()
-        print tmp
         dt = dict()
         for g in tmp:
             for (k, v) in g.items():
@@ -90,34 +118,40 @@ class Collector(list):
                     dt[k] = [v]
         self.separate(dt)
 
+
+class Worker:
+    def __init__(self, collector, exec_f):
+        self.target_collector = collector
+        self.action = exec_f
+
+    def do_job(self, args):
+        prehandled = self.pre_handle(args)
+        resultset = self.action(prehandled)
+        if self.check(resultset):
+            self.send(resultset)
+        thread.exit()
+
+    def send(self, handled_data):
+        self.target_collector.gather(handled_data)
+
+    def pre_handle(self, args):
+        return args
+
+    def check(self, resultset):
+        return False
+
+    
         
             
 
 
-class MapWorker:
-
-    def __init__(self, collector, dmt = "[\W\s]"):
-        self.target_collector = collector
+class MapWorker(Worker):
+    def __init__(self, collector, exec_f, dmt = "[\W\s]"):
+        Worker.__init__(self, collector, exec_f)
         self.dmt = dmt
 
-    def do_job(self, args):
-        key = args[0]
-        part_content = args[1]
-        words = self.__pre_handle(part_content, self.dmt)
-        records = dict()
-        for element in words:
-            element = element.lower()
-            if ( element in records ):
-                records[element] += 1
-            else:
-                records[element] = 1
-        if(len(records) > 0):
-            self.__send(records)    
-        thread.exit()
-
-
-    def __send(self, handled_data):
-        self.target_collector.gather(handled_data)
+    def check(self, resultset):
+        return len(resultset) > 0
 
     def __denoise(self, words, ptn = ""):
         for el in words:
@@ -125,10 +159,19 @@ class MapWorker:
                 words.remove(el)
         return words
 
-    def __pre_handle(self, words, ptn):
-        ptn = re.compile(ptn)
-        raw_split = ptn.split(words)
+    def pre_handle(self, args):
+        ptn = re.compile(self.dmt)
+        raw_split = ptn.split(args[1])
         return self.__denoise(raw_split)
+
+
+class ReduceWorker(Worker):
+    def __init__(self, collecotr, exec_f):
+        Worker.__init__(self, collector, exec_f)
+
+    def check(self, resultset):
+        if len(resultset) > 0:
+            return True      
 
 class WorkSlot(threading.Thread):
     def __init__(self, queue, worker):
@@ -143,10 +186,11 @@ class WorkSlot(threading.Thread):
                 if args:
                     self.worker.do_job(args)
                     self.queue.task_done()
-                    print "done!"
                     args = 0
             except:
                 break
+        
+
 
 if __name__ == "__main__":
     clt = Collector()
@@ -162,5 +206,5 @@ if __name__ == "__main__":
     group.fill_tasklist(tlist)
     group.kick_off()
     group.wait_all()
-
-    print clt.group()
+    clt.group()
+    
